@@ -1,0 +1,11 @@
+# 🧮 INVARIANTE OPSEC: O VÁCUO L1
+.env
+*.log
+*.db
+qdrant_data/
+__pycache__/
+.venv/
+.ipynb_checkpoints/
+SOTA_TEARSHEET_PROOF.txt
+audit_prices.csv
+audit_events.csv
