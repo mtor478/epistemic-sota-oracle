@@ -1,51 +1,40 @@
+import os
 import base64
 import time
 import requests
-import tenseal as ts
 import numpy as np
-import torch
-import torch.nn as nn
+import shutil
+from concrete.ml.deployment import FHEModelClient
 
 LEADER_URL = "http://127.0.0.1:8091/reduce_fhe_p2p"
-ORIGINAL_DIM = 384
-COMPRESSED_DIM = 8
+CLIENT_ZIP_URL = "http://127.0.0.1:8091/get_client_zip"
+DIMENSIONS = 8
+TMP_DIR = "/tmp/fhe_agent_p2p_model"
 
-print("⚙️ [AGENTE] Forjando Projeção Topológica SDE (384 -> 8)...")
-class EpistemicCompressor(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super().__init__()
-        self.projection = nn.Linear(in_dim, out_dim, bias=False)
-        nn.init.orthogonal_(self.projection.weight)
+# Clean up and fetch client.zip
+shutil.rmtree(TMP_DIR, ignore_errors=True)
+os.makedirs(TMP_DIR, exist_ok=True)
 
-    def forward(self, x):
-        return self.projection(x)
+print("⚙️ [AGENTE] Buscando client.zip do Líder P2P...")
+r = requests.get(CLIENT_ZIP_URL)
+with open(os.path.join(TMP_DIR, "client.zip"), "wb") as f:
+    f.write(r.content)
 
-compressor = EpistemicCompressor(ORIGINAL_DIM, COMPRESSED_DIM)
-compressor.eval()
+print("⚙️ [AGENTE] Inicializando Cliente FHE P2P...")
+client = FHEModelClient(TMP_DIR)
+client.generate_private_and_evaluation_keys()
 
-raw_query_tensor = torch.randn(ORIGINAL_DIM)
-with torch.no_grad():
-    compressed_tensor = compressor(raw_query_tensor)
+# Gerando o query tensor
+query_tensor = np.random.uniform(-0.1, 0.1, (1, 1, DIMENSIONS))
 
-query_list = compressed_tensor.tolist()
+print("⚡ [AGENTE] Encriptando Vetor de Estado SDE...")
+ser_x = client.quantize_encrypt_serialize(query_tensor)
+ser_eval_keys = client.get_serialized_evaluation_keys()
 
-print("⚙️ [AGENTE] Forjando Chaves FHE (CKKS MPC L=1 Compressão Máxima)...")
-# 🧮 VACINA DIMENSIONAL: Queda de 8192 para 4096. Primos limitados a 100 bits.
-# O Payload desaba de 150MB para ~15MB.
-context = ts.context(
-    ts.SCHEME_TYPE.CKKS,
-    poly_modulus_degree=4096,
-    coeff_mod_bit_sizes=[40, 20, 40] 
-)
-context.global_scale = 2**20
-context.generate_galois_keys()
+query_b64 = base64.b64encode(ser_x).decode()
+ctx_b64 = base64.b64encode(ser_eval_keys).decode()
 
-enc_query = ts.ckks_vector(context, query_list)
-
-ctx_b64 = base64.b64encode(context.serialize(save_public_key=True, save_secret_key=False, save_galois_keys=True)).decode()
-query_b64 = base64.b64encode(enc_query.serialize()).decode()
-
-print("🚀 [AGENTE] Disparando Tensor Comprimido e Protegido para a Rede P2P...")
+print("🚀 [AGENTE] Disparando Tensor Protegido para a Rede P2P...")
 t_req = time.time()
 resp = requests.post(LEADER_URL, timeout=45.0, json={"context_b64": ctx_b64, "query_b64": query_b64})
 
@@ -54,15 +43,18 @@ if resp.status_code == 200:
     if "error" in data:
         print(f"🔴 [AGENTE] Colapso: {data['error']}")
     else:
-        res_bytes = base64.b64decode(data["aggregated_result_b64"])
+        results_list = data["aggregated_result_b64"]
         sigs = data["signatures"]
         
-        enc_result = ts.ckks_vector_from(context, res_bytes)
-        decrypted_sum = enc_result.decrypt()
-        
-        # 🧮 Média calculada localmente na borda (Offloading matemático do servidor)
+        # Descriptografar cada resultado parcial e calcular a média
+        decrypted_results = []
+        for res_b64 in results_list:
+            res_bytes = base64.b64decode(res_b64)
+            decrypted_y = client.deserialize_decrypt_dequantize(res_bytes)[0][0]
+            decrypted_results.append(decrypted_y)
+            
         N = len(sigs)
-        decrypted_mean = [x / N for x in decrypted_sum]
+        decrypted_mean = np.mean(decrypted_results, axis=0).tolist()
         
         print(f"🟢 [AGENTE] Consenso BFT Alcançado. {N} assinaturas validadas.")
         print(f"💎 SOTA: Produto Escalar Homomórfico Distribuído extraído.")

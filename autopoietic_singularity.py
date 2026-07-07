@@ -1,13 +1,14 @@
 import base64
 import time
 import requests
-import tenseal as ts
 import numpy as np
 import torch
 import torch.nn.functional as F
 import os
+import shutil
 from web3 import Web3
 from dotenv import load_dotenv
+from concrete.ml.deployment import FHEModelClient
 
 load_dotenv(os.path.expanduser("~/epistemic_ecosystem.env"))
 RPC_URL = os.getenv("RPC_URL_HTTP", "")
@@ -15,27 +16,51 @@ PK = os.getenv("AGENT_PRIVATE_KEY", "")
 CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS", "")
 
 LEADER_URL = "http://127.0.0.1:8091/reduce_fhe_p2p"
+CLIENT_ZIP_URL = "http://127.0.0.1:8091/get_client_zip"
 DIMENSIONS = 8
 NYQUIST_INTERVAL = 15 # 4 horas estritas para macro volatilidade
+TMP_DIR = "/tmp/autopoietic_singularity_model"
 
 w3 = Web3(Web3.HTTPProvider(RPC_URL)) if RPC_URL else None
 shadow_mode = not (w3 and w3.is_connected() and PK and CONTRACT_ADDRESS)
 
+# Clean up and fetch client.zip
+shutil.rmtree(TMP_DIR, ignore_errors=True)
+os.makedirs(TMP_DIR, exist_ok=True)
+
 print("⚙️ [AGENTE SDE] Colapsando Função de Incerteza (TFHE L=1)...")
-context = ts.context(ts.SCHEME_TYPE.CKKS, poly_modulus_degree=4096, coeff_mod_bit_sizes=[40, 20, 40])
-context.global_scale = 2**20
-context.generate_galois_keys()
+print("⚙️ [AGENTE SDE] Buscando client.zip do Líder...")
+try:
+    r = requests.get(CLIENT_ZIP_URL, timeout=10.0)
+    with open(os.path.join(TMP_DIR, "client.zip"), "wb") as f:
+        f.write(r.content)
+    client = FHEModelClient(TMP_DIR)
+    client.generate_private_and_evaluation_keys()
+except Exception as e:
+    print(f"🔴 [AGENTE SDE] Falha ao inicializar chaves FHE: {e}")
+    client = None
+
+single_step_test = os.environ.get("TEST_SINGULARITY_SINGLE_STEP") == "1"
 
 # 🧮 O SANTO GRAAL: Loop Autopoiético Perpétuo
 while True:
     print("\n" + "="*50)
     print("🌌 [DAEMON L4] Acordando para novo Bloco de Consenso...")
     
-    query_tensor = np.random.uniform(-0.1, 0.1, DIMENSIONS).tolist()
-    enc_query = ts.ckks_vector(context, query_tensor)
+    if client is None:
+        print("🔴 Cliente FHE não inicializado. Abortando passo.")
+        if single_step_test: break
+        time.sleep(NYQUIST_INTERVAL)
+        continue
+        
+    query_tensor = np.random.uniform(-0.1, 0.1, (1, 1, DIMENSIONS))
+    
+    print("⚡ [AGENTE L4] Encriptando Vetor de Estado...")
+    ser_x = client.quantize_encrypt_serialize(query_tensor)
+    ser_eval_keys = client.get_serialized_evaluation_keys()
 
-    ctx_b64 = base64.b64encode(context.serialize(save_public_key=True, save_secret_key=False, save_galois_keys=True)).decode()
-    query_b64 = base64.b64encode(enc_query.serialize()).decode()
+    ctx_b64 = base64.b64encode(ser_eval_keys).decode()
+    query_b64 = base64.b64encode(ser_x).decode()
 
     print("🚀 [AGENTE L4] Buscando Consenso BFT no Oráculo Descentralizado...")
     try:
@@ -46,15 +71,19 @@ while True:
             if "error" in data:
                 print(f"🔴 Colapso: {data['error']}")
             else:
-                res_bytes = base64.b64decode(data["aggregated_result_b64"])
+                results_list = data["aggregated_result_b64"]
                 sigs = data["signatures"]
                 merkle_root = data["merkle_root"]
                 
-                enc_result = ts.ckks_vector_from(context, res_bytes)
-                decrypted_sum = enc_result.decrypt()
-                
+                # Decrypt each result and calculate the average
+                decrypted_results = []
+                for res_b64 in results_list:
+                    res_bytes = base64.b64decode(res_b64)
+                    decrypted_y = client.deserialize_decrypt_dequantize(res_bytes)[0][0]
+                    decrypted_results.append(decrypted_y)
+                    
                 N = len(sigs)
-                decrypted_mean = [x / N for x in decrypted_sum]
+                decrypted_mean = np.mean(decrypted_results, axis=0).tolist()
                 
                 print(f"🟢 [BFT] {N} Assinaturas Validadas. Raiz: {merkle_root[:16]}...")
                 
@@ -65,7 +94,7 @@ while True:
                 print(f"🎯 [SDE] Alocação Ótima (Target Weights): {target_weights[:3]}...")
                 
                 if shadow_mode:
-                    print(f"👻 [SHADOW MODE] Variáveis de Mainnet ausentes. Transação L1 evitada.")
+                    print(f"% [SHADOW MODE] Variáveis de Mainnet ausentes. Transação L1 evitada.")
                 else:
                     print("🔥 [DEFI] Disparando Liquidacão BFT On-Chain...")
                     account = w3.eth.account.from_key(PK)
@@ -93,5 +122,9 @@ while True:
     except Exception as e:
         print(f"🟡 [L4] Vácuo Térmico: {e}")
 
+    if single_step_test:
+        print("🧪 [AGENTE SDE] Teste de passo único concluído. Encerrando agente.")
+        break
+        
     print(f"⏳ [SDE] Adormecendo... Hibernação Estocástica ({NYQUIST_INTERVAL}s).")
     time.sleep(NYQUIST_INTERVAL)

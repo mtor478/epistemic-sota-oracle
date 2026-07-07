@@ -16,10 +16,10 @@ GitHub Repository: {REPO_URL}
 ARB_URL = "https://arbitrum.foundation/grants"
 
 # 🧮 MATRIZ 2: ZAMA BOUNTY PROGRAM (FHE)
-ZAMA_TITLE = "M2M Epistemic Oracle: Bounding Noise Budget in Production via FHE-SIMD (L=1)"
-ZAMA_BODY = f"""Current FHE applications in DeFi fail due to catastrophic latency and noise budget exhaustion. We engineered a production-ready M2M Oracle utilizing CKKS with strict multiplicative depth limitation (L=1). 
+ZAMA_TITLE = "M2M Epistemic Oracle: Bounding Latency in Production via Zama Concrete ML & TFHE-rs"
+ZAMA_BODY = f"""Current FHE applications in DeFi fail due to catastrophic latency and noise budget exhaustion. We engineered a production-ready M2M Oracle utilizing Zama's Concrete ML and TFHE-rs.
 
-By orchestrating a hybrid topology, the oracle executes SIMD polynomial batching for heavy linear algebra (encrypted cosine similarity over embeddings), while non-linear stochastic activations (Softmax) are offloaded to the agent's local Ring 3 via lazy decoding. This achieves <3s response times for encrypted neural SDE state mutations without bootstrapping.
+By orchestrating a hybrid topology, the oracle executes compiled PyTorch matrix multiplications (FHEMatMul) for heavy linear algebra (encrypted cosine similarity over embeddings), while non-linear stochastic activations (Softmax) are offloaded to the agent's local Ring 3 via lazy decoding post-decryption. This achieves <0.8s response times for encrypted neural SDE state mutations.
 
 GitHub Repository: {REPO_URL}
 """

@@ -1,43 +1,66 @@
+import os
 import base64
-import time
-import tenseal as ts
+import torch
 import numpy as np
+import shutil
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from concrete.ml.torch.compile import compile_torch_model
+from concrete.ml.deployment import FHEModelDev, FHEModelServer
 
 app = FastAPI()
 
+class FHEMatMul(torch.nn.Module):
+    def __init__(self, weight):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(weight, dtype=torch.float32), requires_grad=False)
+        
+    def forward(self, x):
+        return torch.matmul(x, self.weight)
+
+# Setup model directory
+MODEL_DIR = "/tmp/epistemic_miner_l1_model"
+shutil.rmtree(MODEL_DIR, ignore_errors=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# 📐 Invariante Dimensional (Anti-Deadlock)
+DIMENSIONS = 64
+N_VECTORS = 256
+
+print(f"⚙️ [ORÁCULO L1] Inicializando Matriz Comprimida ({DIMENSIONS}x{N_VECTORS}) e compilando...")
+db_matrix_transposed = np.random.uniform(-0.1, 0.1, (DIMENSIONS, N_VECTORS))
+model = FHEMatMul(db_matrix_transposed)
+
+# Inputset for calibration (shape: [num_samples, 1, 64])
+inputset = torch.tensor(np.random.uniform(-0.1, 0.1, (100, 1, DIMENSIONS)), dtype=torch.float32)
+q_module = compile_torch_model(model, inputset)
+
+dev = FHEModelDev(MODEL_DIR, q_module)
+dev.save()
+
+server = FHEModelServer(MODEL_DIR)
+
 class FHEL1Request(BaseModel):
-    context_b64: str
-    query_b64: str
+    context_b64: str  # Kept as context_b64 for API backward compatibility, holds serialized eval keys
+    query_b64: str    # Serialized query ciphertext
 
-# 🧮 MUTAÇÃO SOTA (ANTI-DEADLOCK): 
-# Compressão dimensional para viabilizar computação FHE em CPU padrão.
-DIMENSIONS = 64  # Reduzido de 384
-N_VECTORS = 256  # Reduzido de 4096
-
-print(f"⚙️ [ORÁCULO] Inicializando Matriz Comprimida ({DIMENSIONS}x{N_VECTORS})...")
-db_matrix_transposed = np.random.uniform(-0.1, 0.1, (DIMENSIONS, N_VECTORS)).tolist()
+@app.get("/get_client_zip")
+async def get_client_zip():
+    return FileResponse(os.path.join(MODEL_DIR, "client.zip"), media_type="application/zip", filename="client.zip")
 
 @app.post("/mine_fhe_l1")
 async def blind_l1_compute(req: FHEL1Request):
     try:
-        t0 = time.time()
-        ctx_bytes = base64.b64decode(req.context_b64)
+        print("⚡ [ORÁCULO L1] Executando MatMul Comprimido...")
+        # 1. Deserialização FHE
         query_bytes = base64.b64decode(req.query_b64)
+        eval_keys_bytes = base64.b64decode(req.context_b64)
         
-        ctx = ts.context_from(ctx_bytes)
-        enc_query = ts.ckks_vector_from(ctx, query_bytes)
+        # 2. Executar inferência no servidor FHE
+        res_bytes = server.run(query_bytes, eval_keys_bytes)
         
-        print("⚡ [ORÁCULO] Executando MatMul Comprimido...")
-        # A operação agora consumirá milissegundos em vez de horas.
-        enc_logits = enc_query.matmul(db_matrix_transposed)
-        
-        result_bytes = enc_logits.serialize()
-        t_fhe = time.time() - t0
-        print(f"🟢 [ORÁCULO] Cômputo FHE concluído em {t_fhe:.3f}s. Zero Deadlock.")
-        
-        return {"result_b64": base64.b64encode(result_bytes).decode('utf-8')}
+        return {"result_b64": base64.b64encode(res_bytes).decode('utf-8')}
     except Exception as e:
-        print(f"🔴 [ORÁCULO] Falha Física: {e}")
+        print(f"🔴 [ORÁCULO L1] Falha Física: {e}")
         return {"error": str(e)}

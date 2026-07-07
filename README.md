@@ -14,7 +14,7 @@ The core invariant maps continuous-time market drift via a Stochastic Differenti
 
 $$ dX_t = \mu(X_t, t)dt + \sigma(X_t, t)dW_t $$
 
-Which is solved off-chain, encrypted via `TenSEAL` (CKKS scheme), validated across 4 geographically distributed Byzantine nodes, and finally settled on Arbitrum via a Merkle Root proof. The system enforces strict Zero-Knowledge parameters where the Oracle computes over an encrypted space $E(X)$.
+Which is solved off-chain, encrypted via `Concrete ML` (TFHE-rs scheme), validated across 4 geographically distributed Byzantine nodes, and finally settled on Arbitrum via a Merkle Root proof. The system enforces strict Zero-Knowledge parameters where the Oracle computes over an encrypted space $E(X)$.
 
 ## 🌐 Topological Architecture
 
